@@ -1,0 +1,6 @@
+name: Menu Per Role
+type: module
+core: 8.x
+description: 'Controls the visiblity of the menus for user roles.'
+
+
