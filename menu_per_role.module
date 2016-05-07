@@ -1,0 +1,115 @@
+
+<?php
+use Drupal\Core\Menu;
+use Drupal\Core\Menu\MenuLinkInterface;
+use Drupal\Core\Access\AccessResult;
+use Drupal\Core\Template\Loader\ThemeRegistryLoader;
+use Drupal\Component\Plugin\Exception\PluginNotFoundException;
+use \Drupal\Core\Access\AccessResultInterface;
+
+
+
+function menu_per_role_form_menu_link_content_menu_link_content_form_alter(&$form, &$form_state) {
+  // Visibility settings.
+  $form['visibility_title'] = array(
+    '#type' => 'item',
+    '#title' => t('Visibility settings'),
+  );
+
+  //To get the Plugin ID of menu item.
+  $menu_link = $form_state->getFormObject()->getEntity(); 
+  $mlid = $menu_link->getPluginId();
+
+  // Per-role visibility.
+  $form['visibility']['role'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Roles'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+    '#group' => 'visibility',
+    '#weight' => 10,
+  );
+ 
+  $form['visibility']['role']['roles'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Show menu link for specific roles'),
+    '#default_value' =>  _menu_per_role_get_roles($mlid),
+    '#options' => user_role_names(),
+    '#description' => t('Show this menu link only for the selected role(s). If you select no roles, the menu link will be visible to all users.'),
+  );
+  $form['actions']['submit']['#submit'][] = 'menu_per_role_submit_handler';
+}
+
+
+function menu_per_role_submit_handler(&$form, &$form_state) {
+  $menu_link = $form_state->getFormObject()->getEntity(); 
+  $menu_id = $menu_link->getPluginId();
+
+  $roles = $form_state->getValue('roles');
+  $rids = _menu_per_role_serialize_rids($roles);
+ 
+  $fields = array('mlid' => $menu_id, 'rids' => $rids);
+  \Drupal::database()->merge('menu_per_role')
+    ->key(array('mlid' => $menu_id))
+    ->insertFields(array(
+      'mlid' => $menu_id,
+      'rids' => $rids,
+    ))
+    ->updateFields(array(
+      'rids' => $rids,
+  ))->execute();
+}
+
+
+function _menu_per_role_serialize_rids($roles){
+  $rids = array();
+  foreach ($roles as $rid => $checked) {
+    if ($checked) {
+      $rids[] = $rid;
+    }
+  }
+  $rids = serialize($rids);
+  return $rids;
+}
+
+/**
+ * Gets all roles with access to the specified menu item
+ * No roles mean that access is granted by this module.
+ *
+ */
+function _menu_per_role_get_roles($mlid){
+  $result = db_select('menu_per_role', 'mpr')
+            ->fields('mpr',array('rids'))
+            ->condition('mlid',$mlid,'=')
+            ->execute()->fetchAssoc();
+
+  if(!empty($result))            
+  $roles = unserialize($result['rids']);
+  $role_array = array();
+  if(!empty($roles))
+  foreach($roles as $key=>$value){;
+      $role_array[$value] = $value;
+  }
+  return $role_array;
+  
+}
+
+function menu_per_role_preprocess_menu(&$variables){
+  $items = $variables['items'];
+  $accessible_items = array();
+  foreach ($items as $key => $item) {  
+    $role_visibility = _menu_per_role_get_roles($key);
+    $get_user_roles = \Drupal::currentUser()->getRoles();
+
+    $user_role_visiblity = array_intersect($role_visibility, $get_user_roles);
+    if(!empty($user_role_visiblity)){
+      continue;
+    }
+    else {
+      $accessible_items[$key] = $item;
+    }
+  }
+  $variables['items'] = $accessible_items;
+}
+
+?>
