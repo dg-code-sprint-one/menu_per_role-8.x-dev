@@ -19,6 +19,12 @@ function menu_per_role_schema() {
         'not null' => TRUE,
         'default' => ''
       ),
+      'access_check' => array(
+        'description' => t('The menu access identifier.'),
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
     ),
     'primary key' => array('mlid'),
     'foreign keys' => array(
