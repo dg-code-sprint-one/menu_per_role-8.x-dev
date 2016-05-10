@@ -1,5 +1,9 @@
-
 <?php
+/**
+ * @file
+ * Allows restricting access to menu items and menu path per role
+ */
+
 use Drupal\Core\Menu;
 use Drupal\Core\Menu\MenuLinkInterface;
 use Drupal\Core\Access\AccessResult;
@@ -7,8 +11,9 @@ use Drupal\Core\Template\Loader\ThemeRegistryLoader;
 use Drupal\Component\Plugin\Exception\PluginNotFoundException;
 use \Drupal\Core\Access\AccessResultInterface;
 
-
-
+/**
+ * Implements hook_form_BASE_FORM_ID_alter().
+ */
 function menu_per_role_form_menu_link_content_menu_link_content_form_alter(&$form, &$form_state) {
   // Visibility settings.
   $form['visibility_title'] = array(
@@ -33,34 +38,48 @@ function menu_per_role_form_menu_link_content_menu_link_content_form_alter(&$for
   $form['visibility']['role']['roles'] = array(
     '#type' => 'checkboxes',
     '#title' => t('Show menu link for specific roles'),
-    '#default_value' =>  _menu_per_role_get_roles($mlid),
+    '#default_value' =>  _menu_per_role_get_roles($mlid,''),
     '#options' => user_role_names(),
     '#description' => t('Show this menu link only for the selected role(s). If you select no roles, the menu link will be visible to all users.'),
+  );
+  $form['visibility']['role']['access_check'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Path Access'),
+    '#return_value' => 1,
+    '#default_value' =>_menu_per_role_get_roles($mlid,'check_id'),
+    '#description' => t('Controls whether the menu path should be accessible or not(only applicable for node links)'),
   );
   $form['actions']['submit']['#submit'][] = 'menu_per_role_submit_handler';
 }
 
-
+/**
+ * Submit function for menu add / edit form.
+ */
 function menu_per_role_submit_handler(&$form, &$form_state) {
   $menu_link = $form_state->getFormObject()->getEntity(); 
   $menu_id = $menu_link->getPluginId();
 
   $roles = $form_state->getValue('roles');
   $rids = _menu_per_role_serialize_rids($roles);
+  $access_check = $form_state->getValue('access_check');
  
-  $fields = array('mlid' => $menu_id, 'rids' => $rids);
+  $fields = array('mlid' => $menu_id, 'rids' => $rids, 'access_check' => $access_check);
   \Drupal::database()->merge('menu_per_role')
     ->key(array('mlid' => $menu_id))
     ->insertFields(array(
       'mlid' => $menu_id,
       'rids' => $rids,
+      'access_check' => $access_check
     ))
     ->updateFields(array(
       'rids' => $rids,
+      'access_check' => $access_check
   ))->execute();
 }
 
-
+/**
+ * Helper function to save the role items.
+ */
 function _menu_per_role_serialize_rids($roles){
   $rids = array();
   foreach ($roles as $rid => $checked) {
@@ -77,31 +96,36 @@ function _menu_per_role_serialize_rids($roles){
  * No roles mean that access is granted by this module.
  *
  */
-function _menu_per_role_get_roles($mlid){
+function _menu_per_role_get_roles($mlid, $check_value =''){
   $result = db_select('menu_per_role', 'mpr')
-            ->fields('mpr',array('rids'))
+            ->fields('mpr',array('rids','access_check'))
             ->condition('mlid',$mlid,'=')
             ->execute()->fetchAssoc();
-
-  if(!empty($result))            
-  $roles = unserialize($result['rids']);
-  $role_array = array();
-  if(!empty($roles))
-  foreach($roles as $key=>$value){;
-      $role_array[$value] = $value;
-  }
-  return $role_array;
   
+  if(!empty($result)){
+    if($check_value == "check_id"){
+      $role_array = $result['access_check'];
+    }
+    else{
+      $roles = unserialize($result['rids']);
+      $role_array = array();
+      if(!empty($roles))
+      foreach($roles as $key=>$value){
+        $role_array[$value] = $value;
+      }
+    }
+    return $role_array;
+  }      
 }
 
+/**
+ * Implements hook_preprocess_menu
+ */
 function menu_per_role_preprocess_menu(&$variables){
   $items = $variables['items'];
   $accessible_items = array();
   foreach ($items as $key => $item) {  
-    $role_visibility = _menu_per_role_get_roles($key);
-    $get_user_roles = \Drupal::currentUser()->getRoles();
-
-    $user_role_visiblity = array_intersect($role_visibility, $get_user_roles);
+    $user_role_visiblity = menu_role_check($key);
     if(!empty($user_role_visiblity)){
       continue;
     }
@@ -112,4 +136,49 @@ function menu_per_role_preprocess_menu(&$variables){
   $variables['items'] = $accessible_items;
 }
 
+/**
+ * Implements hook_node_access
+ */
+function menu_per_role_node_access(\Drupal\node\NodeInterface $node, $op, \Drupal\Core\Session\AccountInterface$account) {
+  
+  $acc_result = db_select('menu_per_role', 'mpr')
+    ->fields('mpr',array('mlid'))
+    ->condition('access_check',1,'=')
+    ->execute()->fetchAll(PDO::FETCH_ASSOC);
+
+  if(!empty($acc_result)){
+    foreach($acc_result as $key=>$value){
+      $check_result = db_select('menu_tree', 'mtr')
+        ->fields('mtr',array('route_param_key'))
+        ->condition('id',$value,'=')
+        ->execute()->fetchAssoc();
+     
+      $visiblity = menu_role_check($value);
+      if(!empty($check_result)){
+        $param_key = $check_result['route_param_key'];
+        $params = explode("=",$param_key);
+      }
+     
+      if(isset($params) && $node->id() == $params[1] && !empty($visiblity)){
+        //echo "<pre>";print_r($acc_result);die;
+        return AccessResult::forbidden();
+      }
+    }
+  }
+  return AccessResult::neutral()->setCacheMaxAge(0);
+}
+
+/**
+ * Helper function to check the role access for menu items.
+ */
+function menu_role_check($role_value){
+  $role_array =  _menu_per_role_get_roles($role_value,'');
+  $user_roles = \Drupal::currentUser()->getRoles();
+  if(!empty($role_array))
+  $visiblity = array_intersect($role_array,$user_roles);
+  if(isset($visiblity)){
+    return $visiblity;
+  }
+  return FALSE;
+}
 ?>
